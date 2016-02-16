@@ -22,14 +22,14 @@ BINDIR = /usr/bin
 MAN1DIR = /usr/share/man/man1
 MAN7DIR = /usr/share/man/man7
 # fetchmail's PID file (used in awaken-fetchmail)
-FETCHMAIL_PIDFILE = /var/run/fetchmail/fetchmail.pid
+FETCHMAIL_PIDFILE = /var/run/fetchmail.pid
 
 ## compile time flags/defines ##
 # uncomment to turn on debugging
 #DEBUG = 1
 
 # uncomment the one matching your Dovecot version
-#DOVECOT_PLUGIN_API_2_1 = 1
+DOVECOT_PLUGIN_API_2_1 = 1
 #DOVECOT_PLUGIN_API_2_0 = 1
 
 
