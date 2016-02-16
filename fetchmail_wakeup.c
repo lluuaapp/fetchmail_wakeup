@@ -136,7 +136,7 @@ static void write_time_to_file(time_t time, const char *path)
     }
     else
     {
-      i_error("fetchmail_wakeup: coult not write file %s: %s", path, strerror(errno));
+      i_error("fetchmail_wakeup: could not write file %s: %s", path, strerror(errno));
     }
 }
 
@@ -175,13 +175,25 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 
 	/* make sure client->user is defined */
 	if (client == NULL || client->user == NULL)
-		return;
-
+  {
+    return;
+  }
+  
 	struct fetchmail_wakeup_user *muser = FETCHMAIL_WAKEUP_USER_CONTEXT(client->user);
 
+  if ((muser->last_run_path == NULL) || (*muser->last_run_path == '\0'))
+  {
+#if defined(FETCHMAIL_WAKEUP_DEBUG)
+	i_debug("fetchmail_wakeup: no last_run_path for %s.", client->user->username);
+#endif
+    return;
+  }
+  
 	if (ratelimit(muser))
-		return;
-
+  {
+    return;
+  }
+  
 	/* read config variables depending on the session */
 	const char *fetchmail_helper = muser->fetchmail_helper;
 	const char *fetchmail_pidfile = muser->fetchmail_pidfile;
@@ -257,8 +269,14 @@ static void fetchmail_wakeup_mail_user_created(struct mail_user *user)
 	muser->fetchmail_interval = getenv_interval(user, "fetchmail_interval", FETCHMAIL_INTERVAL);
 	muser->fetchmail_helper = mail_user_plugin_getenv(user, "fetchmail_helper");
 	muser->fetchmail_pidfile = mail_user_plugin_getenv(user, "fetchmail_pidfile");
-	muser->last_run_path = mail_user_home_expand(user, "~/fetchmail_wakeup_last_run");
-
+  
+  const char *path = "~/fetchmail_wakeup_last_run";
+  
+  if (0 == mail_user_try_home_expand(user, &path))
+  {
+    muser->last_run_path = path;
+  }
+  
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
   i_debug("fetchmail_wakeup: fetchmail_interval(%d) %ld for %s => %s.", getpid(), muser->fetchmail_interval, user->username, muser->last_run_path);
 #endif
