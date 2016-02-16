@@ -135,7 +135,7 @@ static bool ratelimit(struct mail_user *user)
   const char *last_run_path = "~/fetchmail_wakeup_last_run";
   if (0 != mail_user_try_home_expand(user, &last_run_path))
   {
-    i_error("fetchmail_wakeup: could not get home folder for user %s.", user->username);
+    i_error("fetchmail_wakeup: could not get home folder for user %s", user->username);
     return TRUE;
   }
   
@@ -171,7 +171,7 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 	/* make sure client->user is defined */
 	if (client == NULL || client->user == NULL)
   {
-    i_error("fetchmail_wakeup: no user for command context %s.", ctx->name);
+    i_error("fetchmail_wakeup: no user for command context %s", ctx->name);
     return;
   }
   
@@ -185,7 +185,7 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 	const char *fetchmail_pidfile = mail_user_plugin_getenv(client->user, "fetchmail_pidfile");
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-	i_debug("fetchmail_wakeup: rate limit passed for %s.", ctx->name);
+	i_debug("fetchmail_wakeup: rate limit passed for %s", ctx->name);
 #endif
 
 	/* if a helper application is defined, then call it */
@@ -194,7 +194,7 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 		int status;
 		char *const *argv;
 
-		i_info("fetchmail_wakeup: executing %s.", fetchmail_helper);
+		i_info("fetchmail_wakeup: executing %s", fetchmail_helper);
 
 		switch (pid = fork()) {
 			case -1:	// fork failed
@@ -221,7 +221,7 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 		FILE *pidfile = fopen(fetchmail_pidfile, "r");
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-		i_debug("fetchmail_wakeup: sending SIGUSR1 to process given in %s.", fetchmail_pidfile);
+		i_debug("fetchmail_wakeup: sending SIGUSR1 to process given in %s", fetchmail_pidfile);
 #endif
 
 		if (pidfile) {
@@ -259,7 +259,7 @@ static handler_t fetchmail_wakeup_cmd(struct client_command_context *ctx)
 			if (strcasecmp(cmds[i].name, ctx->name) == 0) {
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-				i_debug("fetchmail_wakeup: intercepting %s.", cmds[i].name);
+				i_debug("fetchmail_wakeup: intercepting %s", cmds[i].name);
 #endif
 
 				/* try to wake up fetchmail */
@@ -317,7 +317,7 @@ void fetchmail_wakeup_plugin_init(struct module *module)
 #endif
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-	i_debug("fetchmail_wakeup: start intercepting IMAP commands.");
+	i_debug("fetchmail_wakeup: start intercepting IMAP commands");
 #endif
 }
 
@@ -341,7 +341,7 @@ void fetchmail_wakeup_plugin_deinit(void)
 #endif
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-	i_debug("fetchmail_wakeup: stop intercepting IMAP commands.");
+	i_debug("fetchmail_wakeup: stop intercepting IMAP commands");
 #endif
 }
 
