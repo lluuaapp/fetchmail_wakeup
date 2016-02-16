@@ -13,6 +13,12 @@
  *
  */
 
+#include "lib.h"
+#include "imap-client.h"
+#include "mail-user.h"
+#include "module-context.h"
+#include "mail-storage-hooks.h"
+
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/wait.h>
@@ -22,9 +28,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <limits.h>
-#include "lib.h"
-#include "imap-client.h"
-
+#include <time.h>
 
 /* make sure only one API version is defined (prefer higher ones) */
 #if defined(DOVECOT_PLUGIN_API_2_1)
@@ -42,6 +46,19 @@ typedef    void   handler_t;
 
 #define FETCHMAIL_INTERVAL	60
 
+#define FETCHMAIL_WAKEUP_USER_CONTEXT(obj) \
+	MODULE_CONTEXT(obj, fetchmail_wakeup_user_module)
+
+struct fetchmail_wakeup_user {
+	union mail_user_module_context module_ctx;
+
+  long fetchmail_interval;
+	const char *fetchmail_helper;
+	const char *fetchmail_pidfile;
+  const char *last_run_path;
+};
+
+static MODULE_CONTEXT_DEFINE_INIT(fetchmail_wakeup_user_module, &mail_user_module_register);
 
 /* data structure for commands to be overridden */
 struct overrides {
@@ -82,25 +99,68 @@ static long getenv_interval(struct mail_user *user, const char *name, long fallb
 	return fallback;
 }
 
+static time_t read_time_from_file(const char *path)
+{
+    FILE *fp;
+    if (0 != (fp = fopen(path, "r")))
+    {
+      time_t result;
+      
+      if (1 == fscanf(fp, "%ld", &result))
+      {
+        fclose(fp);
+        return result;
+      }
+      else
+      {
+        i_error("fetchmail_wakeup: coult not read time from file %s: %s", path, strerror(errno));
+      }
+      
+      fclose(fp);
+    }
+    
+#if defined(FETCHMAIL_WAKEUP_DEBUG)
+  i_debug("fetchmail_wakeup: could not read file %s", path);
+#endif
+    
+    return 0;
+}
+
+static void write_time_to_file(time_t time, const char *path)
+{
+    FILE *fp;
+    if (0 != (fp = fopen(path, "w")))
+    {
+      fprintf(fp, "%ld", time);
+      fclose(fp);
+    }
+    else
+    {
+      i_error("fetchmail_wakeup: coult not write file %s: %s", path, strerror(errno));
+    }
+}
+
 
 /*
  * Don't bother waking up fetchmail too often
  */
-static bool ratelimit(long interval)
+static bool ratelimit(struct fetchmail_wakeup_user *muser)
 {
-	static struct timeval last_one;
-	struct timeval now;
-	long long millisec_delta;
+  time_t last_run = read_time_from_file(muser->last_run_path);
+  time_t now = time(NULL);
+  time_t delta = (now - last_run);
+  
+  if (delta > muser->fetchmail_interval)
+  {
+    i_info("fetchmail_wakeup: %ld seconds since last run", (long)delta);
+    
+    write_time_to_file(now, muser->last_run_path);
+    return FALSE;
+  }
 
-	if (gettimeofday(&now, NULL))
-		return FALSE;
-
-	millisec_delta = ((now.tv_sec - last_one.tv_sec) * 1000000LL +
-	                  now.tv_usec - last_one.tv_usec) / 1000LL;
-	if (millisec_delta > interval * 1000LL) {
-		last_one = now;
-		return FALSE;
-	}
+#if defined(FETCHMAIL_WAKEUP_DEBUG)
+  i_debug("fetchmail_wakeup: %ld seconds since last run", (long)delta);
+#endif
 
 	return TRUE;
 }
@@ -112,28 +172,22 @@ static bool ratelimit(long interval)
 static void fetchmail_wakeup(struct client_command_context *ctx)
 {
 	struct client *client = ctx->client;
-	long fetchmail_interval = FETCHMAIL_INTERVAL;
 
 	/* make sure client->user is defined */
 	if (client == NULL || client->user == NULL)
 		return;
 
-	/* read config variables depending on the session */
-	const char *fetchmail_helper = mail_user_plugin_getenv(client->user, "fetchmail_helper");
-	const char *fetchmail_pidfile = mail_user_plugin_getenv(client->user, "fetchmail_pidfile");
+	struct fetchmail_wakeup_user *muser = FETCHMAIL_WAKEUP_USER_CONTEXT(client->user);
 
-	/* convert config variable "fetchmail_interval" into a number */
-	fetchmail_interval = getenv_interval(client->user, "fetchmail_interval", FETCHMAIL_INTERVAL);
-
-#if defined(FETCHMAIL_WAKEUP_DEBUG)
-	i_debug("fetchmail_wakeup: interval %ld used for %s.", fetchmail_interval, ctx->name);
-#endif
-
-	if (ratelimit(fetchmail_interval))
+	if (ratelimit(muser))
 		return;
 
+	/* read config variables depending on the session */
+	const char *fetchmail_helper = muser->fetchmail_helper;
+	const char *fetchmail_pidfile = muser->fetchmail_pidfile;
+
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-	i_debug("fetchmail_wakeup: rate limit passed.");
+	i_debug("fetchmail_wakeup: rate limit passed for %s.", ctx->name);
 #endif
 
 	/* if a helper application is defined, then call it */
@@ -142,9 +196,7 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 		int status;
 		char *const *argv;
 
-#if defined(FETCHMAIL_WAKEUP_DEBUG)
-		i_debug("fetchmail wakeup: executing %s.", fetchmail_helper);
-#endif
+		i_info("fetchmail_wakeup: executing %s.", fetchmail_helper);
 
 		switch (pid = fork()) {
 			case -1:	// fork failed
@@ -171,7 +223,7 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 		FILE *pidfile = fopen(fetchmail_pidfile, "r");
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-		i_debug("fetchmail wakeup: sending SIGUSR1 to process given in %s.", fetchmail_pidfile);
+		i_debug("fetchmail_wakeup: sending SIGUSR1 to process given in %s.", fetchmail_pidfile);
 #endif
 
 		if (pidfile) {
@@ -195,6 +247,22 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 	}
 }
 
+static void fetchmail_wakeup_mail_user_created(struct mail_user *user)
+{
+	struct fetchmail_wakeup_user *muser;
+
+	muser = p_new(user->pool, struct fetchmail_wakeup_user, 1);
+	MODULE_CONTEXT_SET(user, fetchmail_wakeup_user_module, muser);
+
+	muser->fetchmail_interval = getenv_interval(user, "fetchmail_interval", FETCHMAIL_INTERVAL);
+	muser->fetchmail_helper = mail_user_plugin_getenv(user, "fetchmail_helper");
+	muser->fetchmail_pidfile = mail_user_plugin_getenv(user, "fetchmail_pidfile");
+	muser->last_run_path = mail_user_home_expand(user, "~/fetchmail_wakeup_last_run");
+
+#if defined(FETCHMAIL_WAKEUP_DEBUG)
+  i_debug("fetchmail_wakeup: fetchmail_interval(%d) %ld for %s => %s.", getpid(), muser->fetchmail_interval, user->username, muser->last_run_path);
+#endif
+}
 
 /*
  * IMAPv4 command wrapper / pre-command hook callback:
@@ -210,7 +278,7 @@ static handler_t fetchmail_wakeup_cmd(struct client_command_context *ctx)
 			if (strcasecmp(cmds[i].name, ctx->name) == 0) {
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-				i_debug("fetchmail wakeup: intercepting %s.", cmds[i].name);
+				i_debug("fetchmail_wakeup: intercepting %s.", cmds[i].name);
 #endif
 
 				/* try to wake up fetchmail */
@@ -242,6 +310,9 @@ static handler_t fetchmail_wakeup_null(struct client_command_context *ctx)
         /* unused */
 }
 
+static struct mail_storage_hooks fetchmail_wakeup_mail_storage_hooks = {
+  .mail_user_created = fetchmail_wakeup_mail_user_created,
+};
 
 /*
  * Plugin init:
@@ -252,6 +323,7 @@ void fetchmail_wakeup_plugin_init(struct module *module)
 {
 #if defined(DOVECOT_PLUGIN_API_2_1)
 	command_hook_register(fetchmail_wakeup_cmd, fetchmail_wakeup_null);
+	mail_storage_hooks_add(module, &fetchmail_wakeup_mail_storage_hooks);
 #elif defined(DOVECOT_PLUGIN_API_2_0)
 	int i;
 
@@ -269,7 +341,7 @@ void fetchmail_wakeup_plugin_init(struct module *module)
 #endif
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-	i_debug("fetchmail wakeup: start intercepting IMAP commands.");
+	i_debug("fetchmail_wakeup: start intercepting IMAP commands.");
 #endif
 }
 
@@ -282,6 +354,7 @@ void fetchmail_wakeup_plugin_deinit(void)
 {
 #if defined(DOVECOT_PLUGIN_API_2_1)
 	command_hook_unregister(fetchmail_wakeup_cmd, fetchmail_wakeup_null);
+	mail_storage_hooks_remove(&fetchmail_wakeup_mail_storage_hooks);
 #elif defined(DOVECOT_PLUGIN_API_2_0)
 	int i;
 
@@ -293,7 +366,7 @@ void fetchmail_wakeup_plugin_deinit(void)
 #endif
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
-	i_debug("fetchmail wakeup: stop intercepting IMAP commands.");
+	i_debug("fetchmail_wakeup: stop intercepting IMAP commands.");
 #endif
 }
 
