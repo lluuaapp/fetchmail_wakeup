@@ -46,20 +46,6 @@ typedef    void   handler_t;
 
 #define FETCHMAIL_INTERVAL	60
 
-#define FETCHMAIL_WAKEUP_USER_CONTEXT(obj) \
-	MODULE_CONTEXT(obj, fetchmail_wakeup_user_module)
-
-struct fetchmail_wakeup_user {
-	union mail_user_module_context module_ctx;
-
-  long fetchmail_interval;
-	const char *fetchmail_helper;
-	const char *fetchmail_pidfile;
-  const char *last_run_path;
-};
-
-static MODULE_CONTEXT_DEFINE_INIT(fetchmail_wakeup_user_module, &mail_user_module_register);
-
 /* data structure for commands to be overridden */
 struct overrides {
 	const char *name;		/* the IMAPv4 command name */
@@ -144,17 +130,26 @@ static void write_time_to_file(time_t time, const char *path)
 /*
  * Don't bother waking up fetchmail too often
  */
-static bool ratelimit(struct fetchmail_wakeup_user *muser)
+static bool ratelimit(struct mail_user *user)
 {
-  time_t last_run = read_time_from_file(muser->last_run_path);
+  const char *last_run_path = "~/fetchmail_wakeup_last_run";
+  if (0 != mail_user_try_home_expand(user, &last_run_path))
+  {
+    i_error("fetchmail_wakeup: could not get home folder for user %s.", user->username);
+    return TRUE;
+  }
+  
+  time_t last_run = read_time_from_file(last_run_path);
   time_t now = time(NULL);
   time_t delta = (now - last_run);
   
-  if (delta > muser->fetchmail_interval)
+  long fetchmail_interval = getenv_interval(user, "fetchmail_interval", FETCHMAIL_INTERVAL);
+  
+  if (delta > fetchmail_interval)
   {
     i_info("fetchmail_wakeup: %ld seconds since last run", (long)delta);
     
-    write_time_to_file(now, muser->last_run_path);
+    write_time_to_file(now, last_run_path);
     return FALSE;
   }
 
@@ -176,27 +171,18 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 	/* make sure client->user is defined */
 	if (client == NULL || client->user == NULL)
   {
+    i_error("fetchmail_wakeup: no user for command context %s.", ctx->name);
     return;
   }
   
-	struct fetchmail_wakeup_user *muser = FETCHMAIL_WAKEUP_USER_CONTEXT(client->user);
-
-  if ((muser->last_run_path == NULL) || (*muser->last_run_path == '\0'))
-  {
-#if defined(FETCHMAIL_WAKEUP_DEBUG)
-	i_debug("fetchmail_wakeup: no last_run_path for %s.", client->user->username);
-#endif
-    return;
-  }
-  
-	if (ratelimit(muser))
+	if (ratelimit(client->user))
   {
     return;
   }
   
 	/* read config variables depending on the session */
-	const char *fetchmail_helper = muser->fetchmail_helper;
-	const char *fetchmail_pidfile = muser->fetchmail_pidfile;
+	const char *fetchmail_helper = mail_user_plugin_getenv(client->user, "fetchmail_helper");
+	const char *fetchmail_pidfile = mail_user_plugin_getenv(client->user, "fetchmail_pidfile");
 
 #if defined(FETCHMAIL_WAKEUP_DEBUG)
 	i_debug("fetchmail_wakeup: rate limit passed for %s.", ctx->name);
@@ -259,29 +245,6 @@ static void fetchmail_wakeup(struct client_command_context *ctx)
 	}
 }
 
-static void fetchmail_wakeup_mail_user_created(struct mail_user *user)
-{
-	struct fetchmail_wakeup_user *muser;
-
-	muser = p_new(user->pool, struct fetchmail_wakeup_user, 1);
-	MODULE_CONTEXT_SET(user, fetchmail_wakeup_user_module, muser);
-
-	muser->fetchmail_interval = getenv_interval(user, "fetchmail_interval", FETCHMAIL_INTERVAL);
-	muser->fetchmail_helper = mail_user_plugin_getenv(user, "fetchmail_helper");
-	muser->fetchmail_pidfile = mail_user_plugin_getenv(user, "fetchmail_pidfile");
-  
-  const char *path = "~/fetchmail_wakeup_last_run";
-  
-  if (0 == mail_user_try_home_expand(user, &path))
-  {
-    muser->last_run_path = path;
-  }
-  
-#if defined(FETCHMAIL_WAKEUP_DEBUG)
-  i_debug("fetchmail_wakeup: fetchmail_interval(%d) %ld for %s => %s.", getpid(), muser->fetchmail_interval, user->username, muser->last_run_path);
-#endif
-}
-
 /*
  * IMAPv4 command wrapper / pre-command hook callback:
  * - Dovecot 2.0: call fetchmail_wakeup & daisy-chain to the IMAP function call
@@ -328,10 +291,6 @@ static handler_t fetchmail_wakeup_null(struct client_command_context *ctx)
         /* unused */
 }
 
-static struct mail_storage_hooks fetchmail_wakeup_mail_storage_hooks = {
-  .mail_user_created = fetchmail_wakeup_mail_user_created,
-};
-
 /*
  * Plugin init:
  * - Dovecot 2.0: store original IMAPv4 handler functions and replace it with my own
@@ -341,7 +300,6 @@ void fetchmail_wakeup_plugin_init(struct module *module)
 {
 #if defined(DOVECOT_PLUGIN_API_2_1)
 	command_hook_register(fetchmail_wakeup_cmd, fetchmail_wakeup_null);
-	mail_storage_hooks_add(module, &fetchmail_wakeup_mail_storage_hooks);
 #elif defined(DOVECOT_PLUGIN_API_2_0)
 	int i;
 
@@ -372,7 +330,6 @@ void fetchmail_wakeup_plugin_deinit(void)
 {
 #if defined(DOVECOT_PLUGIN_API_2_1)
 	command_hook_unregister(fetchmail_wakeup_cmd, fetchmail_wakeup_null);
-	mail_storage_hooks_remove(&fetchmail_wakeup_mail_storage_hooks);
 #elif defined(DOVECOT_PLUGIN_API_2_0)
 	int i;
 
