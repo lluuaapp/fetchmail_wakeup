@@ -22,6 +22,7 @@
 #include <sys/types.h>
 #include <sys/time.h>
 #include <sys/wait.h>
+#include <sys/file.h>
 #include <signal.h>
 #include <stdio.h>
 #include <ctype.h>
@@ -139,6 +140,9 @@ static bool ratelimit(struct mail_user *user)
     return TRUE;
   }
   
+  int fd = open(last_run_path, O_RDONLY);
+  flock(fd, LOCK_EX);
+  
   time_t last_run = read_time_from_file(last_run_path);
   time_t now = time(NULL);
   time_t delta = (now - last_run);
@@ -150,6 +154,8 @@ static bool ratelimit(struct mail_user *user)
     i_info("fetchmail_wakeup: %ld seconds since last run", (long)delta);
     
     write_time_to_file(now, last_run_path);
+    flock(fd, LOCK_UN);
+    close(fd);
     return FALSE;
   }
 
@@ -157,9 +163,10 @@ static bool ratelimit(struct mail_user *user)
   i_debug("fetchmail_wakeup: %ld seconds since last run", (long)delta);
 #endif
 
+  flock(fd, LOCK_UN);
+  close(fd);
 	return TRUE;
 }
-
 
 /*
  * Send a signal to fetchmail or call a helper to awaken fetchmail
